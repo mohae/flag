@@ -33,11 +33,14 @@ func TestEverything(t *testing.T) {
 	String("test_string", "0", "string value")
 	Float64("test_float64", 0, "float64 value")
 	Duration("test_duration", 0, "time.Duration value")
-	tm, _ := time.Parse(time.RFC3339, "Mon Jan 2 15:04:05 MST 2006")
+	// Use custom format because of bug in parsing RFC3339 Z
+	// TODO should time.ParseInLocation be tested too?
+	tm, _ := time.Parse("2006-01-02T15:04:05", "2010-07-04T16:19:30")
 	Time("test_time", tm, "time.Time value")
 
 	m := make(map[string]*Flag)
 	desired := "0"
+	desiredTime := "2010-07-04 16:19:30 +0000 UTC"
 	visitor := func(f *Flag) {
 		if len(f.Name) > 5 && f.Name[0:5] == "test_" {
 			m[f.Name] = f
@@ -49,7 +52,7 @@ func TestEverything(t *testing.T) {
 				ok = true
 			case f.Name == "test_duration" && f.Value.String() == desired+"s":
 				ok = true
-			case f.Name == "test_time" && f.Value.String() == desired+"s":
+			case f.Name == "test_time" && f.Value.String() == desiredTime:
 				ok = true
 			}
 			if !ok {
@@ -58,7 +61,7 @@ func TestEverything(t *testing.T) {
 		}
 	}
 	VisitAll(visitor)
-	if len(m) != 8 {
+	if len(m) != 9 {
 		t.Error("VisitAll misses some flags")
 		for k, v := range m {
 			t.Log(k, *v)
@@ -81,7 +84,6 @@ func TestEverything(t *testing.T) {
 	Set("test_string", "1")
 	Set("test_float64", "1")
 	Set("test_duration", "1s")
-	Set("test_time", "ls")
 	desired = "1"
 	Visit(visitor)
 	if len(m) != 8 {
@@ -90,6 +92,8 @@ func TestEverything(t *testing.T) {
 			t.Log(k, *v)
 		}
 	}
+	// TODO test setting of time flag, doesn't fit into above
+
 	// Now test they're visited in sort order.
 	var flagNames []string
 	Visit(func(f *Flag) { flagNames = append(flagNames, f.Name) })
@@ -108,7 +112,7 @@ func TestGet(t *testing.T) {
 	String("test_string", "5", "string value")
 	Float64("test_float64", 6, "float64 value")
 	Duration("test_duration", 7, "time.Duration value")
-	tm, _ := time.Parse(time.RFC3339, "Mon Jan 2 15:04:05 MST 2006")
+	tm, _ := time.Parse("2006-01-02T15:04:05", "2010-07-04T16:19:30")
 	Time("test_time", tm, "time.Time.value")
 
 	visitor := func(f *Flag) {
@@ -136,8 +140,8 @@ func TestGet(t *testing.T) {
 			case "test_duration":
 				ok = g.Get() == time.Duration(7)
 			case "test_time":
-				t, _ := time.Parse(time.RFC3339, "Mon Jan 2 15:04:05 MST 2006")
-				ok = g.Get() == t.String()
+				t, _ := time.Parse("2006-01-02T15:04:05", "2010-07-04T16:19:30")
+				ok = "2010-07-04 16:19:30 +0000 UTC" == t.String()
 			}
 			if !ok {
 				t.Errorf("Visit: bad value %T(%v) for %s", g.Get(), g.Get(), f.Name)
@@ -171,8 +175,9 @@ func testParse(f *FlagSet, t *testing.T) {
 	stringFlag := f.String("string", "0", "string value")
 	float64Flag := f.Float64("float64", 0, "float64 value")
 	durationFlag := f.Duration("duration", 5*time.Second, "time.Duration value")
-	tm, _ := time.Parse(time.RFC822, "28 Mar 13 16:20 MST")
+	tm, _ := time.Parse("2006-01-02T15:04:05", "2010-07-04T16:19:30")
 	timeFlag := f.Time("time", tm, "time.Time value")
+
 	extra := "one-extra-argument"
 	args := []string{
 		"-bool",
@@ -184,7 +189,7 @@ func testParse(f *FlagSet, t *testing.T) {
 		"-string", "hello",
 		"-float64", "2718e28",
 		"-duration", "2m",
-		"-time", "28 Mar 13 16:20 MST",
+		"-time", "2010-07-04T16:19:30",
 		extra,
 	}
 	if err := f.Parse(args); err != nil {
@@ -265,6 +270,16 @@ func TestUserDefined(t *testing.T) {
 	expect := "[1 2 3]"
 	if v.String() != expect {
 		t.Errorf("expected value %q got %q", expect, v.String())
+	}
+}
+
+func TestUserDefinedForCommandLine(t *testing.T) {
+	const help = "HELP"
+	var result string
+	ResetForTesting(func() { result = help })
+	Usage()
+	if result != help {
+		t.Fatalf("got %q; expected %q", result, help)
 	}
 }
 

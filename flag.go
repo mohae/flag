@@ -53,6 +53,8 @@
 	Boolean flags may be:
 		1, 0, t, f, T, F, true, false, TRUE, FALSE, True, False
 	Duration flags accept any input valid for time.ParseDuration.
+	Time flags accepts a modified RFC3339 format:
+	    "2006-01-02T15:04:05"
 
 	The default set of command-line flags is controlled by
 	top-level functions.  The FlagSet type allows one to define
@@ -73,7 +75,8 @@ import (
 	"time"
 )
 
-// ErrHelp is the error returned if the flag -help is invoked but no such flag is defined.
+// ErrHelp is the error returned if the -help or -h flag is invoked
+// but no such flag is defined.
 var ErrHelp = errors.New("flag: help requested")
 
 // -- bool Value
@@ -228,7 +231,8 @@ func (d *durationValue) Get() interface{} { return time.Duration(*d) }
 
 func (d *durationValue) String() string { return (*time.Duration)(d).String() }
 
-// -- time.Time Value
+// -- time.Time Value; assumes RFC3339 format
+// TODO make more flexible
 type timeValue time.Time
 
 func newTimeValue(val time.Time, p *time.Time) *timeValue {
@@ -237,7 +241,7 @@ func newTimeValue(val time.Time, p *time.Time) *timeValue {
 }
 
 func (t *timeValue) Set(s string) error {
-	v, err := time.Parse(time.RFC3339, s)
+	v, err := time.Parse("2006-01-02T15:04:05", s)
 	*t = timeValue(v)
 	return err
 }
@@ -423,6 +427,7 @@ func defaultUsage(f *FlagSet) {
 // for how to write your own usage function.
 
 // Usage prints to standard error a usage message documenting all defined command-line flags.
+// It is called when an error occurs while parsing flags.
 // The function is a variable that may be changed to point to a custom function.
 var Usage = func() {
 	fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
@@ -646,18 +651,21 @@ func Float64(name string, value float64, usage string) *float64 {
 
 // DurationVar defines a time.Duration flag with specified name, default value, and usage string.
 // The argument p points to a time.Duration variable in which to store the value of the flag.
+// The flag accepts a value acceptable to time.ParseDuration.
 func (f *FlagSet) DurationVar(p *time.Duration, name string, value time.Duration, usage string) {
 	f.Var(newDurationValue(value, p), name, usage)
 }
 
 // DurationVar defines a time.Duration flag with specified name, default value, and usage string.
 // The argument p points to a time.Duration variable in which to store the value of the flag.
+// The flag accepts a value acceptable to time.ParseDuration.
 func DurationVar(p *time.Duration, name string, value time.Duration, usage string) {
 	CommandLine.Var(newDurationValue(value, p), name, usage)
 }
 
 // Duration defines a time.Duration flag with specified name, default value, and usage string.
 // The return value is the address of a time.Duration variable that stores the value of the flag.
+// The flag accepts a value acceptable to time.ParseDuration.
 func (f *FlagSet) Duration(name string, value time.Duration, usage string) *time.Duration {
 	p := new(time.Duration)
 	f.DurationVar(p, name, value, usage)
@@ -666,6 +674,7 @@ func (f *FlagSet) Duration(name string, value time.Duration, usage string) *time
 
 // Duration defines a time.Duration flag with specified name, default value, and usage string.
 // The return value is the address of a time.Duration variable that stores the value of the flag.
+// The flag accepts a value acceptable to time.ParseDuration.
 func Duration(name string, value time.Duration, usage string) *time.Duration {
 	return CommandLine.Duration(name, value, usage)
 }
@@ -741,13 +750,15 @@ func (f *FlagSet) failf(format string, a ...interface{}) error {
 	return err
 }
 
-// usage calls the Usage method for the flag set, or the usage function if
-// the flag set is CommandLine.
+// usage calls the Usage method for the flag set if one is specified,
+// or the appropriate default usage function otherwise.
 func (f *FlagSet) usage() {
-	if f == CommandLine {
-		Usage()
-	} else if f.Usage == nil {
-		defaultUsage(f)
+	if f.Usage == nil {
+		if f == CommandLine {
+			Usage()
+		} else {
+			defaultUsage(f)
+		}
 	} else {
 		f.Usage()
 	}
@@ -762,27 +773,27 @@ func (f *FlagSet) parseOne() (bool, error) {
 	if len(s) == 0 || s[0] != '-' || len(s) == 1 {
 		return false, nil
 	}
-	num_minuses := 1
+	numMinuses := 1
 	if s[1] == '-' {
-		num_minuses++
+		numMinuses++
 		if len(s) == 2 { // "--" terminates the flags
 			f.args = f.args[1:]
 			return false, nil
 		}
 	}
-	name := s[num_minuses:]
+	name := s[numMinuses:]
 	if len(name) == 0 || name[0] == '-' || name[0] == '=' {
 		return false, f.failf("bad flag syntax: %s", s)
 	}
 
 	// it's a flag. does it have an argument?
 	f.args = f.args[1:]
-	has_value := false
+	hasValue := false
 	value := ""
 	for i := 1; i < len(name); i++ { // equals cannot be first
 		if name[i] == '=' {
 			value = name[i+1:]
-			has_value = true
+			hasValue = true
 			name = name[0:i]
 			break
 		}
@@ -796,22 +807,25 @@ func (f *FlagSet) parseOne() (bool, error) {
 		}
 		return false, f.failf("flag provided but not defined: -%s", name)
 	}
+
 	if fv, ok := flag.Value.(boolFlag); ok && fv.IsBoolFlag() { // special case: doesn't need an arg
-		if has_value {
+		if hasValue {
 			if err := fv.Set(value); err != nil {
 				return false, f.failf("invalid boolean value %q for -%s: %v", value, name, err)
 			}
 		} else {
-			fv.Set("true")
+			if err := fv.Set("true"); err != nil {
+				return false, f.failf("invalid boolean flag %s: %v", name, err)
+			}
 		}
 	} else {
 		// It must have a value, which might be the next argument.
-		if !has_value && len(f.args) > 0 {
+		if !hasValue && len(f.args) > 0 {
 			// value is the next arg
-			has_value = true
+			hasValue = true
 			value, f.args = f.args[0], f.args[1:]
 		}
-		if !has_value {
+		if !hasValue {
 			return false, f.failf("flag needs an argument: -%s", name)
 		}
 		if err := flag.Value.Set(value); err != nil {
@@ -828,7 +842,7 @@ func (f *FlagSet) parseOne() (bool, error) {
 // Parse parses flag definitions from the argument list, which should not
 // include the command name.  Must be called after all flags in the FlagSet
 // are defined and before flags are accessed by the program.
-// The return value will be ErrHelp if -help was set but not defined.
+// The return value will be ErrHelp if -help or -h were set but not defined.
 func (f *FlagSet) Parse(arguments []string) error {
 	f.parsed = true
 	f.args = arguments
@@ -870,7 +884,7 @@ func Parsed() bool {
 }
 
 // CommandLine is the default set of command-line flags, parsed from os.Args.
-// The top-level functions such as BoolVar, Arg, and on are wrappers for the
+// The top-level functions such as BoolVar, Arg, and so on are wrappers for the
 // methods of CommandLine.
 var CommandLine = NewFlagSet(os.Args[0], ExitOnError)
 
